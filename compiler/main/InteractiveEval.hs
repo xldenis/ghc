@@ -30,6 +30,8 @@ module InteractiveEval (
         exprType,
         typeKind,
         parseName,
+        parseType,
+        getInstances,
         getDocs,
         GetDocsFailure(..),
         showModule,
@@ -102,6 +104,15 @@ import GHC.Exts
 import Data.Array
 import Exception
 
+import Class (Class)
+import InstEnv (instEnvClss)
+import TcRnDriver ( runTcInteractive )
+import TcEnv (tcGetInstEnvs)
+
+import ClsInst
+
+import UniqDFM (lookupUDFM)
+import Control.Applicative ((<|>))
 -- -----------------------------------------------------------------------------
 -- running a statement interactively
 
@@ -932,6 +943,29 @@ exprType mode expr = withSession $ \hsc_env -> do
 typeKind  :: GhcMonad m => Bool -> String -> m (Type, Kind)
 typeKind normalise str = withSession $ \hsc_env -> do
    liftIO $ hscKcType hsc_env normalise str
+
+parseType :: GhcMonad m => String -> m Type
+parseType str = withSession $ \hsc_env -> do
+  (ty, _) <- liftIO $ hscKcType hsc_env False str
+  return ty
+
+getInstances :: GhcMonad m => Type -> m [(ClsInst)]
+getInstances ty = withSession $ \hsc_env -> do
+  dflags <- getDynFlags
+  liftIO $ runInteractiveHsc hsc_env $ do
+    ioMsgMaybe $ runTcInteractive hsc_env $ do
+      ies@(InstEnvs {ie_global = ie_global, ie_local = ie_local}) <- tcGetInstEnvs
+      let allClasses = instEnvClss ie_global ++ instEnvClss ie_local
+
+      matches <- mapM (\cls -> do
+          -- liftIO $ putStrLn $ showSDocForUser dflags alwaysQualify $ ppr cls
+          let (res, _, _) = lookupInstEnv True ies cls [ty]
+
+          -- liftIO $ putStrLn $ showSDocForUser dflags alwaysQualify $ ppr res
+          return res
+        ) allClasses
+
+      return $ map fst (concat matches)
 
 -----------------------------------------------------------------------------
 -- Compile an expression, run it, and deliver the result

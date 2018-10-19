@@ -222,7 +222,8 @@ ghciCommands = map mkCmd [
   ("unadd",     keepGoingPaths unAddModule,     completeFilename),
   ("undef",     keepGoing undefineMacro,        completeMacro),
   ("unset",     keepGoing unsetOptions,         completeSetOptions),
-  ("where",     keepGoing whereCmd,             noCompletion)
+  ("where",     keepGoing whereCmd,             noCompletion),
+  ("instances", keepGoing' instancesCmd,        completeExpression)
   ] ++ map mkCmdHidden [ -- hidden commands
   ("all-types", keepGoing' allTypesCmd),
   ("complete",  keepGoing completeCmd),
@@ -1741,6 +1742,21 @@ handleGetDocsFailure no_docs = do
     NoDocsInIface {} -> InstallationError msg
     InteractiveName -> ProgramError msg
 
+-----------------------------------------------------------------------------
+-- :instances
+
+instancesCmd :: String -> InputT GHCi ()
+instancesCmd "" =
+  throwGhcException (CmdLineError "syntax: ':instances <type-you-want-instances-for>'")
+instancesCmd s = do
+  handleSourceError GHC.printException $ do
+    ty <- GHC.parseType s
+    res <- GHC.getInstances ty
+
+    printForUser $ pprTypeForUser ty
+
+    printForUser $ vcat $ map ppr res
+    throwGhcException (CmdLineError "implement this command omg")
 -----------------------------------------------------------------------------
 -- :load, :add, :reload
 
