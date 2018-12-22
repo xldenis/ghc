@@ -412,11 +412,16 @@ allIntArgRegs platform
     = panic "X86.Regs.allIntArgRegs: not defined for this platform"
  | otherwise = [rdi,rsi,rdx,rcx,r8,r9]
 
+
+-- | on 64bit platforms we pass the first 8 float/double arguments
+-- in the xmm registers.
 allFPArgRegs :: Platform -> [Reg]
 allFPArgRegs platform
  | platformOS platform == OSMinGW32
     = panic "X86.Regs.allFPArgRegs: not defined for this platform"
- | otherwise = map regSingle [firstxmm .. lastxmm platform]
+ | otherwise = map regSingle [firstxmm .. firstxmm + 7 ]
+
+
 
 -- Machine registers which might be clobbered by instructions that
 -- generate results into fixed registers, or need arguments in a fixed
