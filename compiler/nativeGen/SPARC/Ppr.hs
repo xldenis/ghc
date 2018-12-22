@@ -224,7 +224,7 @@ pprFormat x
         II32    -> sLit ""
         II64    -> sLit "d"
         FF32    -> sLit ""
-        FF64    -> sLit "d"
+        FF64    -> sLit "d")
 
 
 -- | Pretty print a format for an instruction suffix.
@@ -238,7 +238,7 @@ pprStFormat x
         II32  -> sLit ""
         II64  -> sLit "x"
         FF32  -> sLit ""
-        FF64  -> sLit "d"
+        FF64  -> sLit "d")
 
 
 
