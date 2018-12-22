@@ -225,7 +225,6 @@ pprFormat x
         II64    -> sLit "d"
         FF32    -> sLit ""
         FF64    -> sLit "d"
-        _       -> panic "SPARC.Ppr.pprFormat: no match")
 
 
 -- | Pretty print a format for an instruction suffix.
@@ -240,7 +239,7 @@ pprStFormat x
         II64  -> sLit "x"
         FF32  -> sLit ""
         FF64  -> sLit "d"
-        _       -> panic "SPARC.Ppr.pprFormat: no match")
+
 
 
 -- | Pretty print a condition code.
