@@ -1244,10 +1244,7 @@ getNonClobberedOperand (CmmLoad mem pk) = do
   is32Bit <- is32BitPlatform
   -- this logic could be simplified
   -- TODO FIXME
-  if  (not (isFloatType pk) || use_sse2)
-    -- should evaluate to True always because use_sse2 is always true
-    -- so (not _ )|| True == true
-      && (if is32Bit then not (isWord64 pk) else True)
+  if   (if is32Bit then not (isWord64 pk) else True)
       -- if 32bit and pk is at float/double/simd value
       -- or if 64bit
       --  this could use some eyeballs or i'll need to stare at it more later
@@ -2492,7 +2489,7 @@ genCCall32' dflags target dest_regs args = do
         roundTo a x | x `mod` a == 0 = x
                     | otherwise = x + a - (x `mod` a)
 
-        push_arg ::  CmmActual {-current argument-}
+        push_arg :: CmmActual {-current argument-}
                         -> NatM InstrBlock  -- code
 
         push_arg  arg -- we don't need the hints on x86
