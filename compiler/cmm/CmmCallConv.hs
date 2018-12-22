@@ -102,7 +102,7 @@ assignArgumentsPos dflags off conv arg_ty reps = (stk_off, assignments)
 passFloatArgsInXmm :: DynFlags -> Bool
 passFloatArgsInXmm dflags = case platformArch (targetPlatform dflags) of
                               ArchX86_64 -> True
-                              ArchX86    -> True
+                              ArchX86    -> False --
                               _ -> False
 
 -- We used to spill vector registers to the stack since the LLVM backend didn't
