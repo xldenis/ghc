@@ -113,6 +113,13 @@ import ClsInst
 
 import UniqDFM (lookupUDFM)
 import Control.Applicative ((<|>))
+
+import Inst (instDFunType)
+import TcSimplify (captureTopConstraints, solveWanteds)
+import TcRnMonad
+import TcEvidence
+import Data.Bifunctor
+import TcSMonad (runTcS)
 -- -----------------------------------------------------------------------------
 -- running a statement interactively
 
@@ -949,6 +956,46 @@ parseType str = withSession $ \hsc_env -> do
   (ty, _) <- liftIO $ hscKcType hsc_env False str
   return ty
 
+-- getDictionaryBindings :: Var -> TcM TcEvBinds
+getDictionaryBindings dict_var = do
+    loc <- getCtLocM (GivenOrigin UnkSkol) Nothing
+    let nonC = mkNonCanonical CtWanted
+            { ctev_pred = varType dict_var
+            , ctev_nosh = WDeriv
+            , ctev_dest = EvVarDest dict_var
+            , ctev_loc = loc
+            }
+        wCs = mkSimpleWC [cc_ev nonC]
+    (res, evBinds) <- second evBindMapBinds <$> runTcS (solveWanteds wCs)
+    return (res, EvBinds evBinds)
+
+checkForExistence :: DynFlags -> ClsInst -> [DFunInstType] -> TcM Bool
+checkForExistence dflags res mb_inst_tys = do
+    (tys, thetas) <- instDFunType (is_dfun res) mb_inst_tys
+    constraints <- forM thetas $ \theta -> do
+      dictName <- newName (mkDictOcc (mkVarOcc "magic"))
+      let dict_var = mkVanillaGlobal dictName theta
+
+      getDictionaryBindings dict_var
+
+    p $ ppr thetas
+    p $ ppr $ fmap (map isTyVarTy . snd . tcSplitAppTys . ctPred) (wc_simple . fst $ head constraints)
+
+    let (residuals, _) = unzip constraints
+        wantedRes = concat $ map (filter (isWanted . ctEvidence) . bagToList . wc_simple) residuals
+        tyArgs' = concat $ map (snd . tcSplitAppTys . ctPred) wantedRes
+    p $ ppr tyArgs'
+    p $ ppr $ map (tcSplitAppTys . ctPred) wantedRes
+
+
+    let subst = foldl' (\a b -> uncurry (extendTvSubstAndInScope a) b) empty_subst (zip dfun_tvs tys)
+    p $ ppr $ mkFunTys (map ctPred wantedRes) (mkClassPred cls (substTheta subst args))
+    return $ all (isTyVarTy) tyArgs'
+    -- return $ all (== True) res'
+
+  where p = liftIO . putStrLn . showSDocForUser dflags alwaysQualify
+        empty_subst = mkEmptyTCvSubst (mkInScopeSet (tyCoVarsOfType (idType $ is_dfun res)))
+        (dfun_tvs, dfun_theta, cls, args) = instanceSig res
 getInstances :: GhcMonad m => Type -> m [(ClsInst)]
 getInstances ty = withSession $ \hsc_env -> do
   dflags <- getDynFlags
@@ -958,14 +1005,19 @@ getInstances ty = withSession $ \hsc_env -> do
       let allClasses = instEnvClss ie_global ++ instEnvClss ie_local
 
       matches <- mapM (\cls -> do
-          -- liftIO $ putStrLn $ showSDocForUser dflags alwaysQualify $ ppr cls
-          let (res, _, _) = lookupInstEnv True ies cls [ty]
+        let (res, _, _) = lookupInstEnv True ies cls [ty]
 
-          -- liftIO $ putStrLn $ showSDocForUser dflags alwaysQualify $ ppr res
-          return res
+        case res of
+          [(res, mb_inst_tys)] -> do
+            exists <- checkForExistence dflags res mb_inst_tys
+            -- liftIO . putStrLn . showSDocForUser dflags alwaysQualify $ ppr exists
+            case exists of
+              True -> return $ Just res
+              False -> return $ Nothing
+          _ -> return Nothing
         ) allClasses
 
-      return $ map fst (concat matches)
+      return $ (catMaybes matches)
 
 -----------------------------------------------------------------------------
 -- Compile an expression, run it, and deliver the result
