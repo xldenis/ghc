@@ -1753,9 +1753,9 @@ instancesCmd s = do
     ty <- GHC.parseType s
     res <- GHC.getInstances ty
 
-    printForUser $ pprTypeForUser ty
+    -- printForUser $ pprTypeForUser ty
 
-    printForUser $ vcat $ map ppr res
+    printForUser $ vcat $ map pprTypeForUser res
     throwGhcException (CmdLineError "implement this command omg")
 -----------------------------------------------------------------------------
 -- :load, :add, :reload

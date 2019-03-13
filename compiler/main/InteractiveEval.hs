@@ -120,6 +120,7 @@ import TcRnMonad
 import TcEvidence
 import Data.Bifunctor
 import TcSMonad (runTcS)
+import TcType (mkPhiTy)
 -- -----------------------------------------------------------------------------
 -- running a statement interactively
 
@@ -957,7 +958,7 @@ parseType str = withSession $ \hsc_env -> do
   return ty
 
 -- getDictionaryBindings :: Var -> TcM TcEvBinds
-getDictionaryBindings dict_var = do
+getDictionaryBindings dflags dict_var = do
     loc <- getCtLocM (GivenOrigin UnkSkol) Nothing
     let nonC = mkNonCanonical CtWanted
             { ctev_pred = varType dict_var
@@ -966,34 +967,39 @@ getDictionaryBindings dict_var = do
             , ctev_loc = loc
             }
         wCs = mkSimpleWC [cc_ev nonC]
+    -- p $ ppr nonC
+    -- p $ ppr wCs
+    -- o <- runTcS (solveWanteds wCs)
+    -- p $ ppr $ o
     (res, evBinds) <- second evBindMapBinds <$> runTcS (solveWanteds wCs)
     return (res, EvBinds evBinds)
-
-checkForExistence :: DynFlags -> ClsInst -> [DFunInstType] -> TcM Bool
+  -- where p = liftIO . putStrLn . showSDocForUser dflags alwaysQualify
+checkForExistence :: DynFlags -> ClsInst -> [DFunInstType] -> TcM (Bool, TCvSubst)
 checkForExistence dflags res mb_inst_tys = do
     (tys, thetas) <- instDFunType (is_dfun res) mb_inst_tys
     constraints <- forM thetas $ \theta -> do
       dictName <- newName (mkDictOcc (mkVarOcc "magic"))
       let dict_var = mkVanillaGlobal dictName theta
 
-      getDictionaryBindings dict_var
+      getDictionaryBindings dflags dict_var
 
-    p $ ppr thetas
-    p $ ppr $ fmap (map isTyVarTy . snd . tcSplitAppTys . ctPred) (wc_simple . fst $ head constraints)
+    -- p $ ppr (tys, thetas)
 
+    -- p $ ppr constraints
     let (residuals, _) = unzip constraints
         wantedRes = concat $ map (filter (isWanted . ctEvidence) . bagToList . wc_simple) residuals
         tyArgs' = concat $ map (snd . tcSplitAppTys . ctPred) wantedRes
-    p $ ppr tyArgs'
-    p $ ppr $ map (tcSplitAppTys . ctPred) wantedRes
+    -- p $ ppr tyArgs'
+    -- p $ ppr $ map (tcSplitAppTys . ctPred) wantedRes
 
-
+    -- p $ ppr wantedRes
     let subst = foldl' (\a b -> uncurry (extendTvSubstAndInScope a) b) empty_subst (zip dfun_tvs tys)
-    p $ ppr $ mkFunTys (map ctPred wantedRes) (mkClassPred cls (substTheta subst args))
-    return $ all (isTyVarTy) tyArgs'
+
+    -- p $ ppr $ mkVisFunTys (map ctPred wantedRes) (mkClassPred cls (substTheta subst args))
+    return $ (all (isTyVarTy) tyArgs', subst)
     -- return $ all (== True) res'
 
-  where p = liftIO . putStrLn . showSDocForUser dflags alwaysQualify
+  where -- p = liftIO . putStrLn . showSDocForUser dflags neverQualify
         empty_subst = mkEmptyTCvSubst (mkInScopeSet (tyCoVarsOfType (idType $ is_dfun res)))
         (dfun_tvs, dfun_theta, cls, args) = instanceSig res
 getInstances :: GhcMonad m => Type -> m [(ClsInst)]
@@ -1012,12 +1018,25 @@ getInstances ty = withSession $ \hsc_env -> do
             exists <- checkForExistence dflags res mb_inst_tys
             -- liftIO . putStrLn . showSDocForUser dflags alwaysQualify $ ppr exists
             case exists of
-              True -> return $ Just res
-              False -> return $ Nothing
+              (True, s) -> return $ Just $ substClassArgs s res
+              (False, _) -> return $ Nothing
           _ -> return Nothing
         ) allClasses
 
       return $ (catMaybes matches)
+
+substClassArgs :: TCvSubst -> ClsInst -> ClsInst
+substClassArgs subst inst = let
+  clsTy = idType (is_dfun inst)
+  tau   = mkClassPred cls (substTheta subst args)
+  phi   = mkPhiTy (substTheta subst dfun_theta) tau
+  sigma = mkForAllTys (map (\v -> Bndr v Inferred) dfun_tvs) phi
+
+  in inst { is_dfun = (is_dfun inst) { varType = sigma }}
+  where
+  (dfun_tvs, dfun_theta, cls, args) = instanceSig inst
+
+
 
 -----------------------------------------------------------------------------
 -- Compile an expression, run it, and deliver the result
