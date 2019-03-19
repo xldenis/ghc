@@ -78,7 +78,7 @@ import UniqSupply
 import MonadUtils
 import Module
 import PrelNames  ( toDynName, pretendNameIsInScope )
-import TysWiredIn ( isCTupleTyConName )
+import TysWiredIn ( isCTupleTyConName, anyTy, anyTyCon )
 import Panic
 import Maybes
 import ErrUtils
@@ -121,6 +121,8 @@ import TcEvidence
 import Data.Bifunctor
 import TcSMonad (runTcS)
 import TcType (mkPhiTy)
+import VarSet (isEmptyVarSet)
+import FV (fvVarSet)
 -- -----------------------------------------------------------------------------
 -- running a statement interactively
 
@@ -1002,6 +1004,7 @@ checkForExistence dflags res mb_inst_tys = do
   where -- p = liftIO . putStrLn . showSDocForUser dflags neverQualify
         empty_subst = mkEmptyTCvSubst (mkInScopeSet (tyCoVarsOfType (idType $ is_dfun res)))
         (dfun_tvs, dfun_theta, cls, args) = instanceSig res
+
 getInstances :: GhcMonad m => Type -> m [(ClsInst)]
 getInstances ty = withSession $ \hsc_env -> do
   dflags <- getDynFlags
@@ -1025,18 +1028,29 @@ getInstances ty = withSession $ \hsc_env -> do
 
       return $ (catMaybes matches)
 
-substClassArgs :: TCvSubst -> ClsInst -> ClsInst
+substClassArgs ::  TCvSubst -> ClsInst -> ClsInst
 substClassArgs subst inst = let
-  clsTy = idType (is_dfun inst)
-  tau   = mkClassPred cls (substTheta subst args)
-  phi   = mkPhiTy (substTheta subst dfun_theta) tau
-  sigma = mkForAllTys (map (\v -> Bndr v Inferred) dfun_tvs) phi
+    clsTy = idType (is_dfun inst)
+    tau   = mkClassPred cls (substTheta subst args)
+    substitutedConstraints = substTheta subst dfun_theta
+    unsatisfiedConstraints = filter constraintUnsolved substitutedConstraints
+
+    phi   = mkPhiTy (unsatisfiedConstraints) tau
+    sigma = mkForAllTys (map (\v -> Bndr v Inferred) dfun_tvs) phi
 
   in inst { is_dfun = (is_dfun inst) { varType = sigma }}
   where
   (dfun_tvs, dfun_theta, cls, args) = instanceSig inst
 
+  constraintUnsolved cons = let
+    freeVars = fvVarSet $ tyCoFVsOfType cons
+    (_, args) = splitAppTys cons
 
+    in not (isEmptyVarSet freeVars) || any (isAny) args
+
+  isAny ty = case splitTyConApp_maybe ty of
+    Just (tycon, _) -> nonDetCmpTc tycon anyTyCon == EQ
+    Nothing -> False
 
 -----------------------------------------------------------------------------
 -- Compile an expression, run it, and deliver the result

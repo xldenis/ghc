@@ -1755,7 +1755,7 @@ instancesCmd s = do
 
     -- printForUser $ pprTypeForUser ty
 
-    printForUser $ vcat $ map pprTypeForUser res
+    printForUser $ vcat $ map ppr res
     throwGhcException (CmdLineError "implement this command omg")
 -----------------------------------------------------------------------------
 -- :load, :add, :reload
