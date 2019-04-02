@@ -1751,12 +1751,10 @@ instancesCmd "" =
 instancesCmd s = do
   handleSourceError GHC.printException $ do
     ty <- GHC.parseType s
-    res <- GHC.getInstances ty
-
-    -- printForUser $ pprTypeForUser ty
+    res <- GHC.getInstancesForType ty
 
     printForUser $ vcat $ map ppr res
-    throwGhcException (CmdLineError "implement this command omg")
+
 -----------------------------------------------------------------------------
 -- :load, :add, :reload
 

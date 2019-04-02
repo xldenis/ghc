@@ -31,7 +31,7 @@ module InteractiveEval (
         typeKind,
         parseName,
         parseType,
-        getInstances,
+        getInstancesForType,
         getDocs,
         GetDocsFailure(..),
         showModule,
@@ -78,7 +78,7 @@ import UniqSupply
 import MonadUtils
 import Module
 import PrelNames  ( toDynName, pretendNameIsInScope )
-import TysWiredIn ( isCTupleTyConName, anyTy, anyTyCon )
+import TysWiredIn ( isCTupleTyConName, anyTyCon )
 import Panic
 import Maybes
 import ErrUtils
@@ -104,23 +104,17 @@ import GHC.Exts
 import Data.Array
 import Exception
 
-import Class (Class)
-import InstEnv (instEnvClss)
 import TcRnDriver ( runTcInteractive )
 import TcEnv (tcGetInstEnvs)
 
-import ClsInst
-
-import UniqDFM (lookupUDFM)
-import Control.Applicative ((<|>))
-
 import Inst (instDFunType)
-import TcSimplify (captureTopConstraints, solveWanteds)
+import TcSimplify (solveWanteds)
 import TcRnMonad
 import TcEvidence
-import Data.Bifunctor
+import Data.Bifunctor (second)
+
 import TcSMonad (runTcS)
-import TcType (mkPhiTy)
+
 import VarSet (isEmptyVarSet)
 import FV (fvVarSet)
 -- -----------------------------------------------------------------------------
@@ -959,70 +953,65 @@ parseType str = withSession $ \hsc_env -> do
   (ty, _) <- liftIO $ hscKcType hsc_env False str
   return ty
 
--- getDictionaryBindings :: Var -> TcM TcEvBinds
-getDictionaryBindings dflags dict_var = do
-    loc <- getCtLocM (GivenOrigin UnkSkol) Nothing
-    let nonC = mkNonCanonical CtWanted
-            { ctev_pred = varType dict_var
-            , ctev_nosh = WDeriv
-            , ctev_dest = EvVarDest dict_var
-            , ctev_loc = loc
-            }
-        wCs = mkSimpleWC [cc_ev nonC]
-    -- p $ ppr nonC
-    -- p $ ppr wCs
-    -- o <- runTcS (solveWanteds wCs)
-    -- p $ ppr $ o
-    (res, evBinds) <- second evBindMapBinds <$> runTcS (solveWanteds wCs)
-    return (res, EvBinds evBinds)
-  -- where p = liftIO . putStrLn . showSDocForUser dflags alwaysQualify
-checkForExistence :: DynFlags -> ClsInst -> [DFunInstType] -> TcM (Bool, TCvSubst)
-checkForExistence dflags res mb_inst_tys = do
-    (tys, thetas) <- instDFunType (is_dfun res) mb_inst_tys
-    constraints <- forM thetas $ \theta -> do
-      dictName <- newName (mkDictOcc (mkVarOcc "magic"))
-      let dict_var = mkVanillaGlobal dictName theta
+-- ----------------------------------------------------------------------------
+-- Getting the class instances for a type
 
-      getDictionaryBindings dflags dict_var
+getDictionaryBindings :: Var -> TcM (WantedConstraints, TcEvBinds)
+getDictionaryBindings dict_var = do
+  loc <- getCtLocM (GivenOrigin UnkSkol) Nothing
+  let nonC = mkNonCanonical CtWanted
+          { ctev_pred = varType dict_var
+          , ctev_nosh = WDeriv
+          , ctev_dest = EvVarDest dict_var
+          , ctev_loc = loc
+          }
+      wCs = mkSimpleWC [cc_ev nonC]
+  (res, evBinds) <- second evBindMapBinds <$> runTcS (solveWanteds wCs)
+  return (res, EvBinds evBinds)
 
-    -- p $ ppr (tys, thetas)
+checkForExistence :: ClsInst -> [DFunInstType] -> TcM (Maybe TCvSubst)
+checkForExistence res mb_inst_tys = do
+  (tys, thetas) <- instDFunType (is_dfun res) mb_inst_tys
+  constraints <- forM thetas $ \theta -> do
+    dictName <- newName (mkDictOcc (mkVarOcc "magic"))
+    let dict_var = mkVanillaGlobal dictName theta
 
-    -- p $ ppr constraints
-    let (residuals, _) = unzip constraints
-        wantedRes = concat $ map (filter (isWanted . ctEvidence) . bagToList . wc_simple) residuals
-        tyArgs' = concat $ map (snd . tcSplitAppTys . ctPred) wantedRes
-    -- p $ ppr tyArgs'
-    -- p $ ppr $ map (tcSplitAppTys . ctPred) wantedRes
+    getDictionaryBindings dict_var
 
-    -- p $ ppr wantedRes
-    let subst = foldl' (\a b -> uncurry (extendTvSubstAndInScope a) b) empty_subst (zip dfun_tvs tys)
+  let (residuals, _) = unzip constraints
+      wantedRes = concat $ map (filter (isWanted . ctEvidence) . bagToList . wc_simple) residuals
+      tyArgs' = concat $ map (snd . tcSplitAppTys . ctPred) wantedRes
 
-    -- p $ ppr $ mkVisFunTys (map ctPred wantedRes) (mkClassPred cls (substTheta subst args))
-    return $ (all (isTyVarTy) tyArgs', subst)
-    -- return $ all (== True) res'
+  let subst = foldl' (\a b -> uncurry (extendTvSubstAndInScope a) b) empty_subst (zip dfun_tvs tys)
 
-  where -- p = liftIO . putStrLn . showSDocForUser dflags neverQualify
-        empty_subst = mkEmptyTCvSubst (mkInScopeSet (tyCoVarsOfType (idType $ is_dfun res)))
-        (dfun_tvs, dfun_theta, cls, args) = instanceSig res
+  return $ toMaybe (all isTyVarTy tyArgs') subst
 
-getInstances :: GhcMonad m => Type -> m [(ClsInst)]
-getInstances ty = withSession $ \hsc_env -> do
+  where
+
+  toMaybe True  a = Just a
+  toMaybe False _ = Nothing
+
+  empty_subst = mkEmptyTCvSubst (mkInScopeSet (tyCoVarsOfType (idType $ is_dfun res)))
+  (dfun_tvs, dfun_theta, cls, args) = instanceSig res
+
+-- | Get all class instances that can unify with this type
+getInstancesForType :: GhcMonad m => Type -> m [ClsInst]
+getInstancesForType ty = withSession $ \hsc_env -> do
   dflags <- getDynFlags
   liftIO $ runInteractiveHsc hsc_env $ do
     ioMsgMaybe $ runTcInteractive hsc_env $ do
+
       ies@(InstEnvs {ie_global = ie_global, ie_local = ie_local}) <- tcGetInstEnvs
       let allClasses = instEnvClss ie_global ++ instEnvClss ie_local
 
       matches <- mapM (\cls -> do
-        let (res, _, _) = lookupInstEnv True ies cls [ty]
+        let a@(res, _, _) = lookupInstEnv True ies cls [ty]
 
         case res of
           [(res, mb_inst_tys)] -> do
-            exists <- checkForExistence dflags res mb_inst_tys
-            -- liftIO . putStrLn . showSDocForUser dflags alwaysQualify $ ppr exists
-            case exists of
-              (True, s) -> return $ Just $ substClassArgs s res
-              (False, _) -> return $ Nothing
+            exists <- checkForExistence res mb_inst_tys
+
+            return $ fmap (\s -> substClassArgs s res) exists
           _ -> return Nothing
         ) allClasses
 
@@ -1042,11 +1031,12 @@ substClassArgs subst inst = let
   where
   (dfun_tvs, dfun_theta, cls, args) = instanceSig inst
 
+  constraintUnsolved :: Type -> Bool
   constraintUnsolved cons = let
     freeVars = fvVarSet $ tyCoFVsOfType cons
     (_, args) = splitAppTys cons
 
-    in not (isEmptyVarSet freeVars) || any (isAny) args
+    in not (isEmptyVarSet freeVars) || any isAny args
 
   isAny ty = case splitTyConApp_maybe ty of
     Just (tycon, _) -> nonDetCmpTc tycon anyTyCon == EQ
